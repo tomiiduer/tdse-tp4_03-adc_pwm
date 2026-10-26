@@ -50,16 +50,18 @@
 
 /********************** macros and definitions *******************************/
 
-#define STEP (2048)
-#define PERIOD (65535)
+/* ADC1 is 12 bit, right aligned: 0 .. 4095 */
+#define ADC_MAX (4095)
+
+/* PWM period (TIM3 ARR). With ARR = ADC_MAX the pulse width (CCR1) is the ADC
+ * value itself, no scaling needed: duty = adc_value / (ARR + 1).
+ * Timer clock is 8 MHz, so f_pwm = 8 MHz / 4096 ~= 1.95 kHz (period ~512 uS),
+ * high enough for the eye not to see flicker. */
+#define PWM_PERIOD (ADC_MAX)
 
 /********************** internal data declaration ****************************/
 
 /********************** internal functions declaration ***********************/
-void setPWM(TIM_HandleTypeDef timer,
-            uint32_t channel,
-            uint16_t period,
-            uint16_t pulse);
 
 /********************** internal data definition *****************************/
 const char *p_task_pwm 		= "Task PWM";
@@ -74,49 +76,33 @@ void task_pwm_init(void *parameters)
 	shared_data_type *shared_data = (shared_data_type *) parameters;
 
 	shared_data->pwm_active = 0;
+
+	/* Set the period once and start the PWM once. From now on only the pulse
+	 * width (CCR1) is modified. */
+	__HAL_TIM_SET_AUTORELOAD(&htim3, PWM_PERIOD);
+	__HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, shared_data->pwm_active);
+	/* CCR1 is loaded at the update event, so a new duty never cuts a cycle */
+	__HAL_TIM_ENABLE_OCxPRELOAD(&htim3, TIM_CHANNEL_1);
+	HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
+
 	/* Print out: Task Initialized */
 	LOGGER_LOG("  %s is running - %s\r\n", GET_NAME(task_pwm_init), p_task_pwm);
 }
 
 void task_pwm_update(void *parameters)
 {
-
-	static uint16_t period=PERIOD;
-	static int16_t step = STEP;
-
 	shared_data_type *shared_data = (shared_data_type *) parameters;
 
 	if ( shared_data->adc_end_of_conversion ) {
 		shared_data->adc_end_of_conversion = false;
-		setPWM(htim3, TIM_CHANNEL_1, period, shared_data->pwm_active);
-		if ( step>0 ) {
-			if ( period-step<=shared_data->pwm_active ) {
-				step = step * -1;
-			}
+
+		/* Potentiometer position -> LED brightness */
+		shared_data->pwm_active = shared_data->adc_value;
+		if ( ADC_MAX < shared_data->pwm_active ) {
+			shared_data->pwm_active = ADC_MAX;
 		}
-		else {
-			if ( abs(step)>=shared_data->pwm_active ) {
-				step = step * -1;
-			}
-		}
-		shared_data->pwm_active = shared_data->pwm_active + step;
+		__HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, shared_data->pwm_active);
 	}
-}
-
-
-void setPWM(TIM_HandleTypeDef timer, uint32_t channel,
-            uint16_t period, uint16_t pulse) {
-  HAL_TIM_PWM_Stop(&timer, channel);
-  TIM_OC_InitTypeDef sConfigOC;
-  timer.Init.Period = period;
-  HAL_TIM_PWM_Init(&timer);
-
-  sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = pulse;
-  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
-  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-  HAL_TIM_PWM_ConfigChannel(&timer, &sConfigOC, channel);
-  HAL_TIM_PWM_Start(&timer,channel);
 }
 
 /********************** end of file ******************************************/
